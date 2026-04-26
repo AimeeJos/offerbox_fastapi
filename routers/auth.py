@@ -1,3 +1,7 @@
+# Update user details after registration
+from fastapi import Query
+import random
+
 from fastapi import APIRouter, Depends, HTTPException, status, Body
 from fastapi.security import OAuth2PasswordRequestForm
 from core.auth import (
@@ -10,21 +14,70 @@ from core.auth import (
 from core.database import db
 from models.user import User
 from uuid import uuid4
+import random
+import string
+from datetime import datetime, timedelta
 
 router = APIRouter()
 
 
-@router.post("/token")
-async def login(form_data: OAuth2PasswordRequestForm = Depends()):
-    user = await db["users"].find_one({"username": form_data.username})
-    if not user or not verify_password(form_data.password, user["hashed_password"]):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    access_token = create_access_token({"sub": user["username"]})
-    refresh_token = create_refresh_token({"sub": user["username"]})
+
+
+def generate_otp(length=6):
+    return ''.join(random.choices(string.digits, k=length))
+
+def get_otp_expiry(minutes=5):
+    return datetime.utcnow() + timedelta(minutes=minutes)
+
+async def send_otp(phonenumber: str, otp: str):
+    # Placeholder for actual SMS/email sending logic
+    print(f"Sending OTP {otp} to {phonenumber}")
+    # Integrate with SMS/email provider here
+    return True
+
+
+
+# Register or login with phone number: generates and sends OTP
+@router.post("/register-or-login")
+async def register_or_login(phonenumber: str = Body(..., embed=True)):
+    user = await db["users"].find_one({"phonenumber": phonenumber})
+    if not user:
+        # Register new user with only phone number
+        user = User(phonenumber=phonenumber, username=phonenumber, hashed_password="", fullname="", emailaddress="")
+        await db["users"].insert_one({"_id": str(uuid4()), "phonenumber": phonenumber})
+    otp = generate_otp()
+    expiry = get_otp_expiry()
+    _ = await db["otp_codes"].insert_one({
+        "phonenumber": phonenumber,
+        "otp": otp,
+        "expiry": expiry,
+        "used": False
+    })
+    _ = await send_otp(phonenumber, otp)
+    return {"msg": "OTP sent to your phone number"}
+
+
+
+
+
+# OTP Verification: issues tokens if OTP is valid
+@router.post("/verify-otp")
+async def verify_otp(phonenumber: str = Body(...), otp: str = Body(...)):
+    otp_record = await db["otp_codes"].find_one({
+        "phonenumber": phonenumber,
+        "otp": otp,
+        "used": False
+    })
+    if not otp_record:
+        raise HTTPException(status_code=400, detail="Invalid OTP or phone number")
+    if datetime.utcnow() > otp_record["expiry"]:
+        raise HTTPException(status_code=400, detail="OTP expired")
+    await db["otp_codes"].update_one({"_id": otp_record["_id"]}, {"$set": {"used": True}})
+    user = await db["users"].find_one({"phonenumber": phonenumber})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    access_token = create_access_token({"sub": user["phonenumber"]})
+    refresh_token = create_refresh_token({"sub": user["phonenumber"]})
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
@@ -32,17 +85,29 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     }
 
 
+# Update user details endpoint
 @router.post("/register")
-async def register(form_data: OAuth2PasswordRequestForm = Depends()):
-    user = await db["users"].find_one({"username": form_data.username})
-    if user:
-        raise HTTPException(status_code=400, detail="Username already registered")
-    hashed_password = get_password_hash(form_data.password)
-    # user = User(_id=str(uuid4()), username=form_data.username, hashed_password=hashed_password)
-    user = User(username=form_data.username, hashed_password=hashed_password)
-    await db["users"].insert_one(user.dict(by_alias=True))
-    return {"msg": "User registered successfully"}
-
+async def update_user_details(
+    phonenumber: str = Body(...),
+    username: str = Body(...),
+    place: str = Body(...),
+    age: int = Body(...),
+    gender: str = Body(...)
+):
+    user = await db["users"].find_one({"phonenumber": phonenumber})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found. Please register/login with your phone number first.")
+    random_number = random.randint(1000, 9999)
+    user_id = f"{username}#{random_number}"
+    update_fields = {
+        "username": username,
+        "place": place,
+        "age": age,
+        "gender": gender,
+        "user_id": user_id
+    }
+    await db["users"].update_one({"phonenumber": phonenumber}, {"$set": update_fields})
+    return {"msg": "User details updated successfully", "user_id": user_id}
 
 @router.post("/refresh")
 async def refresh_token(refresh_token: str = Body(..., embed=True)):
