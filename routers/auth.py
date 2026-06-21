@@ -1,7 +1,7 @@
 # Update user details after registration
 from fastapi import Query
 import random
-
+import os
 from fastapi import APIRouter, Depends, HTTPException, status, Body
 from fastapi.security import OAuth2PasswordRequestForm
 from core.auth import (
@@ -16,6 +16,8 @@ from models.user import User
 from uuid import uuid4
 import random
 import string
+import smtplib
+from email.message import EmailMessage
 from datetime import datetime, timedelta
 
 router = APIRouter()
@@ -29,32 +31,50 @@ def generate_otp(length=6):
 def get_otp_expiry(minutes=5):
     return datetime.utcnow() + timedelta(minutes=minutes)
 
-async def send_otp(phonenumber: str, otp: str):
+async def send_otp(email: str, otp: str):
     # Placeholder for actual SMS/email sending logic
-    print(f"Sending OTP {otp} to {phonenumber}")
+    server = smtplib.SMTP('smtp.gmail.com', 587)
+    server.starttls()
+    from_email = "aimeemary15@gmail.com"
+    EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
+    server.login(from_email, EMAIL_PASSWORD)  # Use your email password or app password
+    
+    msg = EmailMessage()
+    msg.set_content(f"Your OTP is: {otp}")
+    msg['Subject'] = "Your OTP"
+    msg['From'] = from_email
+    msg['To'] = email
+    server.send_message(msg)
+
+    print(f"Sending OTP {otp} to {email}")
     # Integrate with SMS/email provider here
     return True
 
 
 
-# Register or login with phone number: generates and sends OTP
+# Register or login with email: generates and sends OTP
 @router.post("/register-or-login")
-async def register_or_login(phonenumber: str = Body(..., embed=True)):
-    user = await db["users"].find_one({"phonenumber": phonenumber})
+async def register_or_login(email: str = Body(..., embed=True), name: str = Body(..., embed=True), user_type: str = Body(..., embed=True)):
+    user = await db["users"].find_one({"emailaddress": email})
     if not user:
-        # Register new user with only phone number
-        user = User(phonenumber=phonenumber, username=phonenumber, hashed_password="", fullname="", emailaddress="")
-        await db["users"].insert_one({"_id": str(uuid4()), "phonenumber": phonenumber})
+        # Register new user with only email
+        await db["users"].insert_one({
+            "_id": str(uuid4()),
+            "emailaddress": email,
+            "username": name,
+            "hashed_password": "",
+            "is_login": False,
+            "user_type":user_type})
     otp = generate_otp()
     expiry = get_otp_expiry()
     _ = await db["otp_codes"].insert_one({
-        "phonenumber": phonenumber,
+        "emailaddress": email,
         "otp": otp,
         "expiry": expiry,
         "used": False
     })
-    _ = await send_otp(phonenumber, otp)
-    return {"msg": "OTP sent to your phone number"}
+    _ = await send_otp(email, otp)
+    return {"msg": "OTP sent to your email address", "otp": otp}
 
 
 
@@ -62,22 +82,23 @@ async def register_or_login(phonenumber: str = Body(..., embed=True)):
 
 # OTP Verification: issues tokens if OTP is valid
 @router.post("/verify-otp")
-async def verify_otp(phonenumber: str = Body(...), otp: str = Body(...)):
+async def verify_otp(emailaddress: str = Body(...), otp: str = Body(...)):
     otp_record = await db["otp_codes"].find_one({
-        "phonenumber": phonenumber,
+        "emailaddress": emailaddress,
         "otp": otp,
         "used": False
     })
     if not otp_record:
-        raise HTTPException(status_code=400, detail="Invalid OTP or phone number")
+        raise HTTPException(status_code=400, detail="Invalid OTP or email address")
     if datetime.utcnow() > otp_record["expiry"]:
         raise HTTPException(status_code=400, detail="OTP expired")
     await db["otp_codes"].update_one({"_id": otp_record["_id"]}, {"$set": {"used": True}})
-    user = await db["users"].find_one({"phonenumber": phonenumber})
+    user = await db["users"].find_one({"emailaddress": emailaddress})
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    access_token = create_access_token({"sub": user["phonenumber"]})
-    refresh_token = create_refresh_token({"sub": user["phonenumber"]})
+    user_update = await db["users"].update_one({"_id": user["_id"]}, {"$set": {"is_login": True}})
+    access_token = create_access_token({"sub": user["emailaddress"]})
+    refresh_token = create_refresh_token({"sub": user["emailaddress"]})
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
@@ -85,38 +106,15 @@ async def verify_otp(phonenumber: str = Body(...), otp: str = Body(...)):
     }
 
 
-# Update user details endpoint
-@router.post("/register")
-async def update_user_details(
-    phonenumber: str = Body(...),
-    username: str = Body(...),
-    place: str = Body(...),
-    age: int = Body(...),
-    gender: str = Body(...)
-):
-    user = await db["users"].find_one({"phonenumber": phonenumber})
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found. Please register/login with your phone number first.")
-    random_number = random.randint(1000, 9999)
-    user_id = f"{username}#{random_number}"
-    update_fields = {
-        "username": username,
-        "place": place,
-        "age": age,
-        "gender": gender,
-        "user_id": user_id
-    }
-    await db["users"].update_one({"phonenumber": phonenumber}, {"$set": update_fields})
-    return {"msg": "User details updated successfully", "user_id": user_id}
 
 @router.post("/refresh")
 async def refresh_token(refresh_token: str = Body(..., embed=True)):
     payload = decode_token(refresh_token)
     if payload is None or "sub" not in payload:
         raise HTTPException(status_code=401, detail="Invalid refresh token")
-    username = payload["sub"]
-    user = await db["users"].find_one({"username": username})
+    emailaddress = payload["sub"]
+    user = await db["users"].find_one({"emailaddress": emailaddress})
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
-    access_token = create_access_token({"sub": username})
+    access_token = create_access_token({"sub": emailaddress})
     return {"access_token": access_token, "token_type": "bearer"}
