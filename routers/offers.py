@@ -61,6 +61,7 @@ async def read_offers():
 @router.get("/offers/{offer_id}")
 async def read_offer(offer_id: str):
     offer = await db["offers"].find_one({"offer_id": offer_id}, {"_id": 0})
+    offer.pop("won_ranks", None)
     if not offer:
         return {"msg": "Offer not found"}
     return offer
@@ -84,39 +85,39 @@ async def delete_offer(offer_id: str):
 
 
 
-@router.post("/register")
-async def register_user(promo_code: str = Body(...), emailaddress: str = Body(...)):
-    # fetch offer by promo code
-    offer = await db["offers"].find_one({"promo_code": promo_code}, {"_id": 0})
-    print(f"Fetched offer: {offer}")
-    # fetch user by email address
-    user = await db["users"].find_one({"emailaddress": emailaddress}, {"_id": 0})
-    print(f"Fetched user: {user}")
+# @router.post("/register")
+# async def register_user(promo_code: str = Body(...), emailaddress: str = Body(...)):
+#     # fetch offer by promo code
+#     offer = await db["offers"].find_one({"promo_code": promo_code}, {"_id": 0})
+#     print(f"Fetched offer: {offer}")
+#     # fetch user by email address
+#     user = await db["users"].find_one({"emailaddress": emailaddress}, {"_id": 0})
+#     print(f"Fetched user: {user}")
     
-    # check how manyth offer is being registered for the promo code
-    registration_count = await db["registrations"].count_documents({"promo_code": promo_code})
-    print(f"Current registration count for promo code {promo_code}: {registration_count}")
-    # update qr_code_generated field in offer document
-    qr_code_generated = registration_count+1
-    _ = await db["offers"].update_one({"promo_code": promo_code}, {"$set": {"qr_code_generated": qr_code_generated}})
+#     # check how manyth offer is being registered for the promo code
+#     registration_count = await db["registrations"].count_documents({"promo_code": promo_code})
+#     print(f"Current registration count for promo code {promo_code}: {registration_count}")
+#     # update qr_code_generated field in offer document
+#     qr_code_generated = registration_count+1
+#     _ = await db["offers"].update_one({"promo_code": promo_code}, {"$set": {"qr_code_generated": qr_code_generated}})
     
-    offer_status = "LOST"
-    won_ranks = offer.get("won_ranks", [])
-    print(f"Won ranks for offer {offer['offer_id']}: {won_ranks}")
-    if qr_code_generated in won_ranks:
-        offer_status = "WON"
-    # create registration record
-    registration_data = {
-        "emailaddress": emailaddress,
-        "promo_code": promo_code,
-        "offer_id": offer["offer_id"],
-        "shop_id": offer["shop_id"],
-        "registration_date": datetime.utcnow(),
-        "status": "REGISTERED",
-        "rank": qr_code_generated,
-        "offer_status": offer_status
-    }
-    _ = await db["registrations"].insert_one(registration_data)
+#     offer_status = "LOST"
+#     won_ranks = offer.get("won_ranks", [])
+#     print(f"Won ranks for offer {offer['offer_id']}: {won_ranks}")
+#     if qr_code_generated in won_ranks:
+#         offer_status = "WON"
+#     # create registration record
+#     registration_data = {
+#         "emailaddress": emailaddress,
+#         "promo_code": promo_code,
+#         "offer_id": offer["offer_id"],
+#         "shop_id": offer["shop_id"],
+#         "registration_date": datetime.utcnow(),
+#         "status": "REGISTERED",
+#         "rank": qr_code_generated,
+#         "offer_status": offer_status
+#     }
+#     _ = await db["registrations"].insert_one(registration_data)
     
     
 
@@ -129,19 +130,16 @@ async def submit_answer(contestId: str = Body(...), answer: str = Body(...), ema
         return {"status": "Invalid code"}
     # check if answer is correct
     if str(answer).lower() != str(offer["correct_answer"]).lower():
-        return {"msg": "Sorry, your answer is incorrect. Better luck next time!"}
+        return {"status": "Sorry, Better luck next time!"}
     # check if user has enough coins to participate
     coins_required = offer.get("coins_required", 0)
     user = await db["users"].find_one({"emailaddress": email_address}, {"_id": 0})
     if not user:
-        return {"msg": "User not found"}
+        return {"status": "User not found"}
     
     user_coins = user.get("coins", 0)
     if user_coins < coins_required:
         return {"status": "out of coins", "remaining_coins": user_coins, "coins_required": coins_required}
-    # deduct coins from user
-    new_coins = user_coins - coins_required
-    _ = await db["users"].update_one({"emailaddress": email_address}, {"$set": {"coins": new_coins}})
     
     # fetch rank of last user who registered for the contest
     last_registration = await db["registrations"].find_one({"contest_id": contestId}, sort=[("rank", -1)])
@@ -154,8 +152,12 @@ async def submit_answer(contestId: str = Body(...), answer: str = Body(...), ema
     # check if already registered for the contest   
     existing_registration = await db["registrations"].find_one({"contest_id": contestId, "emailaddress": email_address})
     if existing_registration:
-        return {"msg": "You have already participitated for this contest."}
+        return {"status": "You have already participitated for this contest."}
     # create new registration record
+    # deduct coins from user
+    new_coins = user_coins - coins_required
+    _ = await db["users"].update_one({"emailaddress": email_address}, {"$set": {"coins": new_coins}})
+    
     # unique random number for prize_id
     unique_no = UniqueRandomGenerator(10, 999999).get_number()
     print(f"Generated unique number for prize_id: {unique_no}")
@@ -198,6 +200,11 @@ async def submit_answer(contestId: str = Body(...), answer: str = Body(...), ema
                 "validity": None,
                 "remainingCoins": new_coins
                 }
-                
+        
+#get prize history
+@router.get("/prizes/")
+async def get_prize_history(email_address: str):
+    registrations = [registration async for registration in db["registrations"].find({"emailaddress": email_address, "status": "WON"}, {"_id": 0})]
+    return {"prizes": registrations} 
 
     
