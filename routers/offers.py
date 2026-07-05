@@ -1,6 +1,6 @@
 from datetime import datetime
 import random
-from fastapi import APIRouter, Depends, Body
+from fastapi import APIRouter, Depends, Body, HTTPException
 from core.database import db
 from core.auth import get_current_user
 from utilities.random_utility import UniqueRandomGenerator
@@ -166,6 +166,7 @@ async def submit_answer(contestId: str = Body(...), answer: str = Body(...), ema
         "emailaddress": email_address,
         "contest_id": offer["contest_id"],
         "offer_id": offer["offer_id"],
+        "offer_name": offer["offer_name"],
         "shop_id": offer["shop_id"],
         "registration_date": datetime.utcnow(),
         "status": "PARTICIPATED",
@@ -207,4 +208,23 @@ async def get_prize_history(email_address: str):
     registrations = [registration async for registration in db["registrations"].find({"emailaddress": email_address, "status": "WON"}, {"_id": 0})]
     return {"prizes": registrations} 
 
-    
+# get prize details by prize_id
+@router.get("/prizes/{prize_id}")
+async def get_prize_details(prize_id: str):
+    prize = await db["registrations"].find_one({"prize_id": prize_id}, {"_id": 0})
+    if not prize:
+        raise HTTPException(status_code=404, detail="Prize not found")
+    offer_id = prize.get("offer_id")
+    # fetch offer details for the prize
+    offer = await db["offers"].find_one({"offer_id": offer_id}, {"_id": 0})
+    if not offer:
+        raise HTTPException(status_code=404, detail="Offer not found")
+    return {
+            "status": "success",
+            "prizeStatus": prize.get("status"),
+            "prizeId": prize.get("prize_id"),
+            "prizeName": offer.get("offer_name") if offer else None,
+            "currentStatus": prize.get("claim_status"),
+            "prizeDescription": offer.get("description") if offer else None,
+            "validity": offer.get("validity_end_date") if offer else None,
+            }
