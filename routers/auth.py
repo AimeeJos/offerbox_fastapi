@@ -56,6 +56,8 @@ async def send_otp(email: str, otp: str):
 @router.post("/register-or-login")
 async def register_or_login(email: str = Body(..., embed=True), name: str = Body(..., embed=True), user_type: str = Body(..., embed=True)):
     user = await db["users"].find_one({"emailaddress": email})
+    if user_type not in ["user", "admin", "shop"]:
+        raise HTTPException(status_code=400, detail="Invalid user type")
     if not user:
         # Register new user with only email
         await db["users"].insert_one({
@@ -64,14 +66,17 @@ async def register_or_login(email: str = Body(..., embed=True), name: str = Body
             "username": name,
             "hashed_password": "",
             "is_login": False,
-            "user_type":user_type})
+            "user_type":user_type,
+            "coins":120,
+            "used_passcodes":[]
+            })
     otp = generate_otp()
     expiry = get_otp_expiry()
     _ = await db["otp_codes"].insert_one({
         "emailaddress": email,
         "otp": otp,
         "expiry": expiry,
-        "used": False
+        "is_verified": False
     })
     _ = await send_otp(email, otp)
     return {"msg": "OTP sent to your email address", "otp": otp}
@@ -86,13 +91,13 @@ async def verify_otp(emailaddress: str = Body(...), otp: str = Body(...)):
     otp_record = await db["otp_codes"].find_one({
         "emailaddress": emailaddress,
         "otp": otp,
-        "used": False
+        "is_verified": False
     })
     if not otp_record:
         raise HTTPException(status_code=400, detail="Invalid OTP or email address")
     if datetime.utcnow() > otp_record["expiry"]:
         raise HTTPException(status_code=400, detail="OTP expired")
-    await db["otp_codes"].update_one({"_id": otp_record["_id"]}, {"$set": {"used": True}})
+    await db["otp_codes"].update_one({"_id": otp_record["_id"]}, {"$set": {"is_verified": True}})
     user = await db["users"].find_one({"emailaddress": emailaddress})
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -100,6 +105,9 @@ async def verify_otp(emailaddress: str = Body(...), otp: str = Body(...)):
     access_token = create_access_token({"sub": user["emailaddress"]})
     refresh_token = create_refresh_token({"sub": user["emailaddress"]})
     return {
+        "user_type": user["user_type"],
+        "name": user["username"],
+        "coins": user["coins"],
         "access_token": access_token,
         "refresh_token": refresh_token,
         "token_type": "bearer",
