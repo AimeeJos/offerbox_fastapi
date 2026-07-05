@@ -126,7 +126,7 @@ async def submit_answer(contestId: str = Body(...), answer: str = Body(...), ema
     # fetch offer by contestId
     offer = await db["offers"].find_one({"contest_id": contestId}, {"_id": 0})
     if not offer:
-        return {"msg": "Invalid contest ID"}
+        return {"status": "Invalid code"}
     # check if answer is correct
     if str(answer).lower() != str(offer["correct_answer"]).lower():
         return {"msg": "Sorry, your answer is incorrect. Better luck next time!"}
@@ -138,7 +138,7 @@ async def submit_answer(contestId: str = Body(...), answer: str = Body(...), ema
     
     user_coins = user.get("coins", 0)
     if user_coins < coins_required:
-        return {"msg": "Sorry, you do not have enough coins to participate in this contest."}
+        return {"status": "out of coins", "remaining_coins": user_coins, "coins_required": coins_required}
     # deduct coins from user
     new_coins = user_coins - coins_required
     _ = await db["users"].update_one({"emailaddress": email_address}, {"$set": {"coins": new_coins}})
@@ -156,6 +156,10 @@ async def submit_answer(contestId: str = Body(...), answer: str = Body(...), ema
     if existing_registration:
         return {"msg": "You have already participitated for this contest."}
     # create new registration record
+    # unique random number for prize_id
+    unique_no = UniqueRandomGenerator(10, 999999).get_number()
+    print(f"Generated unique number for prize_id: {unique_no}")
+    prize_id = "PRIZE-" + str(unique_no)
     registration_data = {
         "emailaddress": email_address,
         "contest_id": offer["contest_id"],
@@ -163,14 +167,37 @@ async def submit_answer(contestId: str = Body(...), answer: str = Body(...), ema
         "shop_id": offer["shop_id"],
         "registration_date": datetime.utcnow(),
         "status": "PARTICIPATED",
-        "rank": latest_rank
+        "rank": latest_rank,
+        "claim_status": "UNCLAIMED",
+        "prize_id": prize_id
     }
     _ = await db["registrations"].insert_one(registration_data)
     
     if latest_rank in offer.get("won_ranks", []):
         # update registration status to WON
         _ = await db["registrations"].update_one({"contest_id": contestId, "emailaddress": email_address}, {"$set": {"status": "WON"}})
-        return {"msg": "Congratulations! You have won the contest!"}
+        return {
+            "status": registration_data["status"],
+            "prizeStatus": "won",
+            "prizeId": registration_data["prize_id"],
+            "prizeName": offer.get("offer_name"),
+            "currentStatus": registration_data["claim_status"],
+            "prizeDescription": offer.get("description"),
+            "validity": offer.get("validity_end_date"),
+            "remainingCoins": new_coins
+            }
+
     else:
-        return {"msg": "Sorry, you did not win the contest. Better luck next time!"}
+        return {
+                "status": registration_data["status"],
+                "prizeStatus": "fail",
+                "prizeId": None,
+                "prizeName": None,
+                "currentStatus": None,
+                "prizeDescription": None,
+                "validity": None,
+                "remainingCoins": new_coins
+                }
+                
+
     
