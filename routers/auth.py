@@ -114,6 +114,17 @@ async def verify_otp(emailaddress: str = Body(...), otp: str = Body(...)):
     }
 
 
+@router.post("/home")
+async def home(emailaddress: str = Body(..., embed=True)):
+    user = await db["users"].find_one({"emailaddress": emailaddress})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return {
+        "username": user.get("username"),
+        "coins": user.get("coins", 0),
+    }
+
 
 @router.post("/refresh")
 async def refresh_token(refresh_token: str = Body(..., embed=True)):
